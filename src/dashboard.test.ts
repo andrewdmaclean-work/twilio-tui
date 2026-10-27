@@ -174,7 +174,7 @@ describe("buildDashboard", () => {
   test("exports CSV with quoted values", () => {
     const data = buildDashboard([source([event("2026-10-06T01:00:00Z")], { profile: "p\"x" })], 7, "utc", { now });
     const csv = dashboardCsv(data);
-    expect(csv.split("\n")[0]).toBe("scope,date_utc,account,line,name,messages_in,messages_out,calls_in,calls_out,total");
+    expect(csv.split("\n")[0]).toBe("scope,date_utc,account,line,name,messages_in,messages_out,calls_in,calls_out,total,coverage");
     expect(csv).toContain(`"line_daily","2026-10-06","p""x","${line}","Guerrilla Marketing Line","1","0","0","0","1"`);
   });
 });
@@ -251,4 +251,15 @@ describe("help", () => {
     const missing = [...keys].filter((key) => !helpText.includes((aliases[key] ?? key).toLowerCase()));
     expect(missing).toEqual([]);
   });
+});
+
+test("two-year view includes current and previous years correctly", () => {
+  const historical = buildDashboard([source([
+    event("2026-10-06T12:00:00Z"),
+    event("2025-01-01T12:00:00Z"),
+    event("2023-10-06T12:00:00Z"),
+  ])], 730, "utc", { now });
+  expect(historical.rows).toHaveLength(730);
+  expect(historical.totals.msgIn).toBe(2);
+  expect(historical.previous.msgIn).toBe(1);
 });

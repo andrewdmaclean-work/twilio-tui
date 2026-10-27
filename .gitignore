@@ -21,10 +21,8 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 # dotenv environment variable files
 .env
-.env.development.local
-.env.test.local
-.env.production.local
-.env.local
+.env.*
+!.env.example
 
 # caches
 .eslintcache
@@ -36,3 +34,13 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 # Finder (MacOS) folder config
 .DS_Store
+
+.twilio-tui-cache.json
+.twilio-tui-cache.json.tmp
+
+# traffic databases, including custom cache filenames and SQLite sidecars
+*.sqlite
+*.sqlite-*
+
+# local downloaded models
+/training/

@@ -2,7 +2,7 @@ export type Segment = { text: string; fg: string; bg?: string };
 export type ChartLine = Segment[];
 
 /** Resamples a series to `count` points by averaging buckets (or repeating when stretching). */
-export function resample(values: number[], count: number, mode: "mean" | "sum" = "mean"): number[] {
+export function resample(values: number[], count: number, mode: "mean" | "sum" | "last" = "mean"): number[] {
   const size = Math.max(1, Math.floor(count));
   if (!values.length) return Array.from({ length: size }, () => 0);
   if (values.length <= size && mode === "mean") return values.slice();
@@ -10,6 +10,8 @@ export function resample(values: number[], count: number, mode: "mean" | "sum" =
     const from = Math.floor(index * values.length / Math.min(size, values.length));
     const to = Math.max(from + 1, Math.floor((index + 1) * values.length / Math.min(size, values.length)));
     const bucket = values.slice(from, to);
+    if (bucket.some((value) => !Number.isFinite(value))) return NaN;
+    if (mode === "last") return bucket.at(-1)!;
     const sum = bucket.reduce((total, value) => total + value, 0);
     return mode === "sum" ? sum : sum / bucket.length;
   });
@@ -57,7 +59,7 @@ export function brailleLineChart(
   width: number,
   height: number,
   max: number,
-  { overlapColor, emptyColor }: { overlapColor: string; emptyColor: string },
+  { overlapColor, emptyColor, cumulative = false }: { overlapColor: string; emptyColor: string; cumulative?: boolean },
 ): ChartLine[] {
   const cols = Math.max(1, Math.floor(width));
   const rows = Math.max(1, Math.floor(height));
@@ -66,19 +68,21 @@ export function brailleLineChart(
   const masks = series.map(() => new Uint8Array(cols * rows));
 
   series.forEach((entry, seriesIndex) => {
-    const values = resample(entry.values, dotsX);
+    const values = resample(entry.values, dotsX, cumulative ? "last" : "mean");
     const mask = masks[seriesIndex]!;
     const plot = (x: number, y: number) => {
       const cell = Math.floor(y / 4) * cols + Math.floor(x / 2);
       mask[cell]! |= brailleBits[y % 4]![x % 2]!;
     };
     const points = values.map((value, index) => ({
+      valid: Number.isFinite(value),
       x: values.length === 1 ? Math.floor(dotsX / 2) : Math.round(index * (dotsX - 1) / (values.length - 1)),
       y: dotsY - 1 - Math.round(Math.min(1, Math.max(0, value / max)) * (dotsY - 1)),
     }));
     points.forEach((point, index) => {
+      if (!point.valid) return;
       const next = points[index + 1];
-      if (!next) {
+      if (!next?.valid) {
         plot(point.x, point.y);
         return;
       }
@@ -99,7 +103,11 @@ export function brailleLineChart(
     });
   });
 
+  const gaps = Array.from({ length: cols }, (_, col) => series.some((entry) => entry.values.slice(
+    Math.floor(col * entry.values.length / cols), Math.max(1, Math.ceil((col + 1) * entry.values.length / cols)),
+  ).some((value) => !Number.isFinite(value))));
   return Array.from({ length: rows }, (_, row) => joinSegments(Array.from({ length: cols }, (_, col) => {
+    if (gaps[col]) return { text: "░", fg: emptyColor };
     const cell = row * cols + col;
     let bits = 0;
     const owners: string[] = [];
@@ -122,8 +130,8 @@ export function slotEdges(count: number, width: number): number[] {
 }
 
 /** Repeats each value across its slot so a short series fills the whole width. */
-export function spread(values: number[], width: number): number[] {
-  if (values.length >= width) return resample(values, width);
+export function spread(values: number[], width: number, cumulative = false): number[] {
+  if (values.length >= width) return resample(values, width, cumulative ? "last" : "mean");
   const edges = slotEdges(values.length, width);
   return values.flatMap((value, index) => Array.from({ length: edges[index + 1]! - edges[index]! }, () => value));
 }
@@ -137,16 +145,16 @@ export function stackedColumns(
   top: number[],
   width: number,
   height: number,
-  { bottomColor, topColor, emptyColor }: { bottomColor: string; topColor: string; emptyColor: string },
+  { bottomColor, topColor, emptyColor, cumulative = false }: { bottomColor: string; topColor: string; emptyColor: string; cumulative?: boolean },
 ): { lines: ChartLine[]; max: number; edges: number[] } {
   const cols = Math.max(1, Math.floor(width));
   const rows = Math.max(1, Math.floor(height));
   const bins = Math.min(bottom.length || 1, cols);
-  const lower = resample(bottom, bins, "sum");
-  const upper = resample(top, bins, "sum");
+  const lower = resample(bottom, bins, cumulative ? "last" : "sum");
+  const upper = resample(top, bins, cumulative ? "last" : "sum");
   const edges = slotEdges(bins, cols);
   const useGaps = cols / bins >= 3;
-  const max = niceMax(Math.max(1, ...lower.map((value, index) => value + upper[index]!)));
+  const max = niceMax(Math.max(1, ...lower.map((value, index) => value + upper[index]!).filter(Number.isFinite)));
 
   const lines = Array.from({ length: rows }, (_, rowIndex) => {
     const row = rows - rowIndex - 1;
@@ -160,7 +168,8 @@ export function stackedColumns(
       const bottomFill = Math.max(0, Math.min(8, bottomEighths - cellStart));
       const totalFill = Math.max(0, Math.min(8, totalEighths - cellStart));
       let cell: Segment;
-      if (totalFill === 0) cell = { text: row === 0 ? "▁" : " ", fg: emptyColor };
+      if (!Number.isFinite(total)) cell = { text: "░", fg: emptyColor };
+      else if (totalFill === 0) cell = { text: row === 0 ? "▁" : " ", fg: emptyColor };
       else if (bottomFill >= 8) cell = { text: "█", fg: bottomColor };
       else if (bottomFill === 0) cell = { text: lowerBlocks[totalFill]!, fg: topColor };
       else if (totalFill === 8) cell = { text: lowerBlocks[bottomFill]!, fg: bottomColor, bg: topColor };
@@ -180,20 +189,21 @@ const sparkBlocks = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
 /** A single-row sparkline using block heights. */
 export function sparkline(values: number[], width: number): string {
   const points = spread(values, width);
-  const max = Math.max(...points, 0);
-  if (max <= 0) return "·".repeat(points.length);
-  return points.map((value) => value <= 0 ? " " : sparkBlocks[Math.min(7, Math.floor(value / max * 7.999))]!).join("");
+  const max = Math.max(...points.filter(Number.isFinite), 0);
+  if (max <= 0) return points.map((value) => Number.isFinite(value) ? "·" : "░").join("");
+  return points.map((value) => !Number.isFinite(value) ? "░" : value <= 0 ? " " : sparkBlocks[Math.min(7, Math.floor(value / max * 7.999))]!).join("");
 }
 
 /** Multi-row block sparkline (independent scale per series). */
 export function blockSparkline(values: number[], width: number, height: number): string[] {
   const points = resample(values, width);
-  const max = Math.max(1, ...points);
+  const max = Math.max(1, ...points.filter(Number.isFinite));
   const rows = Math.max(1, Math.floor(height));
   const heights = points.map((value) => value > 0 ? Math.max(1, Math.round(value / max * rows * 8)) : 0);
   return Array.from({ length: rows }, (_, rowIndex) => {
     const row = rows - rowIndex - 1;
-    return heights.map((height) => {
+    return heights.map((height, index) => {
+      if (!Number.isFinite(points[index])) return "░";
       const fill = Math.max(0, Math.min(8, height - row * 8));
       if (fill === 0) return row === 0 && height === 0 ? "·" : " ";
       return lowerBlocks[fill]!;
